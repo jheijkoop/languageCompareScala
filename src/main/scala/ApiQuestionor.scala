@@ -2,6 +2,7 @@ import akka.actor._
 
 import scala.concurrent.duration.DurationInt
 import scala.concurrent.{Await, Future, Promise, blocking}
+import scala.io.Source
 import scala.util.Try
 
 object ApiQuestionor extends App {
@@ -10,8 +11,11 @@ object ApiQuestionor extends App {
   import scala.concurrent.ExecutionContext.Implicits.global
 
   def download(url: String) = {
-    val result = scala.io.Source.fromURL(url).mkString
-    result.parseJson
+    Future {
+      blocking {
+        Source.fromURL(url).mkString.parseJson
+      }
+    }
   }
 
   val urls = List(
@@ -24,12 +28,7 @@ object ApiQuestionor extends App {
   val promises = urls.map { url: String =>
     val promise = Promise[JsValue]
 
-    val future = Future {
-      blocking {
-        download(url)
-      }
-    }
-    future.onComplete(promise.tryComplete)
+    download(url).onComplete(promise.tryComplete)
 
     promise
   }
@@ -46,7 +45,7 @@ object ApiQuestionor extends App {
   // just futures
 
   // actors!!
-  class MyActor extends Actor {
+  class Collector extends Actor {
     var responses: List[JsValue] = List()
 
     def shuttingDown: Receive = {
@@ -76,19 +75,13 @@ object ApiQuestionor extends App {
   class Downloador extends Actor {
     def receive = {
       case url: String =>
-        val future = Future {
-          blocking {
-            download(url)
-          }
-        }
-
         val collector = sender
-        future.onSuccess { case json => collector ! json }
+        download(url).onSuccess { case json => collector ! json }
     }
   }
 
   implicit val system = ActorSystem("foobar")
-  val collector = system.actorOf(Props(new MyActor))
+  val collector = system.actorOf(Props(new Collector))
   collector ! urls
   // actors!!
 }
