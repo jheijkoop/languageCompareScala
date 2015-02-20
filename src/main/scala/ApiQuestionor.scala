@@ -1,4 +1,4 @@
 
 object ApiQuestionor extends App {
-  prinln("Hello world")
+  println("Hello world")
 }
