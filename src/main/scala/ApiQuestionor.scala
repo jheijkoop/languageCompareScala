@@ -1,14 +1,13 @@
 import akka.actor._
+import spray.json._
 
-import scala.concurrent.duration.DurationInt
 import scala.concurrent.{Await, Future, Promise, blocking}
 import scala.io.Source
-import scala.util.Try
+import scala.util.{Success, Try}
 
 object ApiQuestionor extends App {
-  import spray.json._
-
   import scala.concurrent.ExecutionContext.Implicits.global
+  import scala.concurrent.duration._
 
   def download(url: String) = {
     Future {
@@ -24,36 +23,18 @@ object ApiQuestionor extends App {
     "http://api.openweathermap.org/data/2.5/forecast/daily?q=London&units=metric&cnt=14"
   )
 
-  // just futures
-  val promises = urls.map { url: String =>
-    val promise = Promise[JsValue]
-
-    download(url).onComplete(promise.tryComplete)
-
-    promise
-  }
-
-  promises.map(promise => Try(Await.result(promise.future, 30.milliseconds)))
-
-  val succeeded = for {
-    promise <- promises
-    possibleResult: Try[JsValue] <- promise.future.value
-    if possibleResult.isSuccess
-  } yield possibleResult.get
-
-  succeeded.foreach(println)
-  // just futures
-
-  // actors!!
-  class Collector extends Actor {
+  class Collector(val system: ActorSystem) extends Actor {
     var responses: List[JsValue] = List()
 
-    def shuttingDown: Receive = {
-      case "timeout" => system.shutdown()
-      case _ =>
+    def shuttingDown(): Receive = {
+      system.scheduler.scheduleOnce(100.milliseconds, self, "timeout")
+
+      {
+        case "timeout" => system.shutdown()
+        case _ =>
+      }
     }
 
-    import scala.concurrent.duration._
     def receive = {
       case urls: List[_]  =>
         urls.foreach {
@@ -65,10 +46,9 @@ object ApiQuestionor extends App {
 
       case response: JsValue => responses = response :: responses
       case "timeout" =>
-        context.children.foreach(_ ! PoisonPill)
+        context.children.foreach(context.stop)
         println(responses)
-        context.become(shuttingDown)
-        system.scheduler.scheduleOnce(100.milliseconds, self, "timeout")
+        context.become(shuttingDown())
     }
   }
 
@@ -80,8 +60,27 @@ object ApiQuestionor extends App {
     }
   }
 
-  implicit val system = ActorSystem("foobar")
-  val collector = system.actorOf(Props(new Collector))
-  collector ! urls
-  // actors!!
+  def withActors(system: ActorSystem) = {
+    val collector = system.actorOf(Props(classOf[Collector], system))
+    collector ! urls
+  }
+
+  def withPromises() {
+    val promises = urls.map { url: String =>
+      val promise = Promise[JsValue]
+
+      download(url).onComplete(promise.tryComplete)
+
+      promise
+    }
+
+    val succeeded = promises
+        .map(promise => Try(Await.result(promise.future, 30.milliseconds)))
+        .collect { case Success(json) => json }
+
+    succeeded.foreach(println)
+  }
+
+  withPromises()
+  withActors(ActorSystem("foobar"))
 }
