@@ -1,14 +1,13 @@
-import java.util.concurrent.TimeoutException
+import akka.actor._
 
 import scala.concurrent.duration.DurationInt
-import scala.concurrent.{Await, Promise}
+import scala.concurrent.{Await, Future, Promise, blocking}
 import scala.util.Try
 
 object ApiQuestionor extends App {
   import spray.json._
 
   import scala.concurrent.ExecutionContext.Implicits.global
-  import scala.concurrent.{Future, blocking}
 
   def download(url: String) = {
     val result = scala.io.Source.fromURL(url).mkString
@@ -21,7 +20,7 @@ object ApiQuestionor extends App {
     "http://api.openweathermap.org/data/2.5/forecast/daily?q=London&units=metric&cnt=14"
   )
 
-  // Download image (blocking operation)
+  // just futures
   val promises = urls.map { url: String =>
     val promise = Promise[JsValue]
 
@@ -44,4 +43,52 @@ object ApiQuestionor extends App {
   } yield possibleResult.get
 
   succeeded.foreach(println)
+  // just futures
+
+  // actors!!
+  class MyActor extends Actor {
+    var responses: List[JsValue] = List()
+
+    def shuttingDown: Receive = {
+      case "timeout" => system.shutdown()
+      case _ =>
+    }
+
+    import scala.concurrent.duration._
+    def receive = {
+      case urls: List[_]  =>
+        urls.foreach {
+          case url: String =>
+            val worker = context.actorOf(Props(classOf[Downloador]))
+            worker ! url
+        }
+        system.scheduler.scheduleOnce(30.milliseconds, self, "timeout")
+
+      case response: JsValue => responses = response :: responses
+      case "timeout" =>
+        context.children.foreach(_ ! PoisonPill)
+        println(responses)
+        context.become(shuttingDown)
+        system.scheduler.scheduleOnce(100.milliseconds, self, "timeout")
+    }
+  }
+
+  class Downloador extends Actor {
+    def receive = {
+      case url: String =>
+        val future = Future {
+          blocking {
+            download(url)
+          }
+        }
+
+        val collector = sender
+        future.onSuccess { case json => collector ! json }
+    }
+  }
+
+  implicit val system = ActorSystem("foobar")
+  val collector = system.actorOf(Props(new MyActor))
+  collector ! urls
+  // actors!!
 }
